@@ -11,7 +11,6 @@ const router = express.Router();
     GET /api/stats
     Get user stats
 */
-
 router.get('/', authenticate, async (req, res) => {
     try {
         let stats = await UserStats.findOne({ userId: req.user._id });
@@ -107,7 +106,26 @@ const getLocalDateString = (date) => {
 router.get('/heatmap', authenticate, async (req, res) => {
     try{
         const oneYearAgo = new Date();
-    } catch(error) {
-        res.status(401).json({ error: '' });
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        oneYearAgo.setHours(0, 0, 0, 0);
+
+        const logs = await ActivityLog.find({
+            userId: req.user._id,
+            date: { $gte: oneYearAgo },
+        }).sort({ date: 1 });
+
+        const heatmapData = logs.map(log => ({
+            date: getLocalDateString(log.date),
+            intensity: log.totalTasks > 0 ? log.completedTasks / log.totalTasks : 0,
+            completedTasks: log.completedTasks,
+            totalTasks: log.totalTasks,
+        }));
+
+        res.json({ heatmap: heatmapData });
+    } catch (error) {
+        console.error('Get heatmap error: ', error);
+        res.status(500).json({ error: 'Server error fetching heatmap' })
     }
-})
+});
+
+export default router;
