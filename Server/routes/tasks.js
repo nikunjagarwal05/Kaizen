@@ -1,5 +1,5 @@
 import express from 'express';
-import { body, validationResult } from 'express-validator';
+import { body, header, validationResult } from 'express-validator';
 import Task from '../models/Task.js';
 import UserStats from '../models/UserStats.js';
 import ActivityLog from '../models/ActivityLog.js';
@@ -215,3 +215,120 @@ router.post('/:id/complete', authenticate, async(req, res) => {
         res.status(500).json({ error: 'Server error completing task' });
     }
 });
+
+
+/*
+POST /api/tasks/:id/fail
+Mark a task as failed/skipped
+*/
+
+router.post('/:id/fail', authenticate, async(req, res) => {
+    try{
+        const task = await Task.findOne({ _id: req.params.id, userId: req.user._id });
+
+        if(!task) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+
+        if(task.status.failed) {
+            return res.json({ task, message: 'Task already marked as failed' });
+        }
+
+        // Update task status
+        task.status.failed = true;
+        task.status.pending = false;
+        task.status.completed = false;
+        await task.save();
+
+        // Apply penalties
+        const stats = await UserStats.findOne({ userId: req.user._id });
+
+        if(stats) {
+            stats.hearts = Math.max(0, stats.hearts - task.penalties.heartLoss);
+            stats.coins = Math.max(0, stats.coins - task.penalties.coinLoss);
+
+            // if heart reaches 0, penalty
+            if (stats.hearts === 0){
+                stats.applyHeartZeroPenalty();
+            }
+
+            await stats.save();
+
+            // Updating activity log for today
+            await updateActivityLog(req.user._id, new Date(), false);
+
+            res.json({
+                task, 
+                stats: {
+                    level: stats.level,
+                    currentExp: stats.currentExp,
+                    maxExp: stats.maxExp,
+                    hearts: stats.maxHearts,
+                    maxHearts: stats.maxHearts,
+                    coins: stats.coins,
+                },
+            });
+        } else {
+            res.json({ task });
+        } 
+    } catch(error) {
+        console.error('Fail task error: ', error);
+        res.status(500).json({ error: 'Server error failing task' });
+    }
+});
+
+/*
+DELETE /api/tasks/:id
+Delete a task
+*/
+
+router.delete('/:id', authenticate, async(req, res) => {
+    try {
+        const task = await Task.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+
+        if (!task) {
+            res.status(404).json({ error: 'Task not found' });
+        }
+
+        res.json({ message: 'Task deleted Successfully' });
+    } catch (error) {
+        console.error('Deleting task error: ', error);
+        res.status(500).json({ error: 'Server error deleting task' });
+    }
+});
+
+/*
+Helper function to update activity log
+*/
+
+async function updateActivityLog(userId, date, completed) {
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const tasks = await Task.find({
+        userId,
+        assignedDate: { $gte: startOfDay, $lte: endOfDay },
+    });
+
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter(t => t.status.completed).length;
+    const success = completedTasks >= GAME_CONSTANTS.MIN_TASKS_FOR_SUCCESSFUL_DAY && 
+                    completedTasks === totalTasks && totalTasks > 0;
+
+
+    await ActivityLog.findOneAndUpdate(
+        {userId, date: startOfDay},
+        {
+            userId,
+            date: startOfDay,
+            completedTasks, 
+            totalTasks, 
+            success,
+        },
+        { upsert: true, new: true }
+    );
+}
+
+export default router;
